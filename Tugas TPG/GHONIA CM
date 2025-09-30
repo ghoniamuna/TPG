@@ -1,0 +1,168 @@
+---
+title: "TPG"
+author: "Ghonia Choirinnajdhatul Muna"
+date: "2025-09-30"
+output: html_document
+---
+
+```{r}
+# ====================================================
+install.packages("Hotelling")
+
+# 0. Membuat Kasus Baru (dengan set.seed 45)
+#    Context: Remote Workers vs Office Workers
+#    Metrics: DailyScreenTime (hours), NightSleep (hours)
+# ====================================================
+library(MASS)
+library(Hotelling)
+
+set.seed(45)
+
+# Sample sizes
+n_remote <- 32
+n_office  <- 32
+
+# Population means (Remote: lebih banyak screen time, sedikit tidur)
+mu_remote <- c(8.5, 6.5)   # (DailyScreenTime, NightSleep)
+mu_office  <- c(6.0, 7.5)  # (DailyScreenTime, NightSleep)
+
+# Covariance matrix (reasonable positive/negative cov structure)
+Sigma <- matrix(c(1.8,  -0.6,
+                  -0.6,  1.2), 2)
+
+# Generate multivariate normal samples
+data_remote <- mvrnorm(n_remote, mu = mu_remote, Sigma = Sigma)
+data_office  <- mvrnorm(n_office,  mu = mu_office,  Sigma = Sigma)
+
+# Combine into a data.frame
+data_workers <- data.frame(
+  Group = rep(c("Remote", "Office"), each = n_remote),
+  DailyScreenTime = c(data_remote[,1], data_office[,1]),
+  NightSleep       = c(data_remote[,2], data_office[,2])
+)
+
+# Quick peek
+head(data_workers)
+summary(data_workers)
+
+```
+```{r}
+# ====================================================
+# 1. Perbandingan Dua Vektor Nilai Tengah
+#    (Saling Bebas, Ragam Sama) — Hotelling T²
+# ====================================================
+group_remote <- subset(data_workers, Group == "Remote", select = c(DailyScreenTime, NightSleep))
+group_office  <- subset(data_workers, Group == "Office",  select = c(DailyScreenTime, NightSleep))
+
+# Hotelling T² test (asumsi ragam sama)
+hasil_hotelling <- hotelling.test(group_remote, group_office)
+print(hasil_hotelling)
+
+# Jika mau, tampilkan juga selisih rata-rata untuk interpretasi
+diff_means <- colMeans(group_remote) - colMeans(group_office)
+diff_means
+
+```
+
+```{r}
+# ====================================================
+# 2. Perbandingan Dua Vektor Nilai Tengah
+#    (Berpasangan)
+#    -- Catatan: hanya relevan jika kamu menganggap tiap Remote dipasangkan
+#       dengan satu Office worker (mis. matching by age), tapi aku sertakan
+#       sesuai permintaan.
+# ====================================================
+# Buat data berpasangan: ambil n = min(n_remote, n_office) pasangan pertama
+n_pair <- min(n_remote, n_office)
+paired_remote <- as.matrix(group_remote[1:n_pair, ])
+paired_office  <- as.matrix(group_office[1:n_pair,  ])
+
+# Selisih (Remote - Office)
+diff_data <- paired_remote - paired_office
+
+n <- nrow(diff_data)
+p <- ncol(diff_data)
+
+mean_diff <- colMeans(diff_data)
+S_diff <- cov(diff_data)
+
+# Hotelling T2 for paired data
+T2 <- n * t(mean_diff) %*% solve(S_diff) %*% mean_diff
+F_stat <- ((n - p) / (p * (n - 1))) * T2
+p_value <- 1 - pf(F_stat, p, n - p)
+
+list(T2 = as.numeric(T2), F_stat = as.numeric(F_stat),
+     df1 = p, df2 = n - p, p_value = as.numeric(p_value),
+     mean_diff = mean_diff)
+
+```
+```{r}
+# ====================================================
+# 3. Perbandingan Dua Vektor Nilai Tengah
+#    (Saling Bebas, Ragam Tidak Sama) -- generalized version
+# ====================================================
+hotelling_unequal <- function(x, y) {
+  n1 <- nrow(x); n2 <- nrow(y)
+  mean1 <- colMeans(x); mean2 <- colMeans(y)
+  S1 <- cov(x); S2 <- cov(y)
+  
+  diff <- mean1 - mean2
+  S_pool <- (S1 / n1 + S2 / n2)        # variance of difference (Welch-type)
+  
+  T2 <- t(diff) %*% solve(S_pool) %*% diff
+  p <- length(diff)
+  
+  list(T2 = as.numeric(T2), diff_mean = diff, cov_diff = S_pool)
+}
+
+hasil_unequal <- hotelling_unequal(as.matrix(group_remote), as.matrix(group_office))
+print(hasil_unequal)
+
+```
+
+```{r}
+# ====================================================
+# 4. Selang Kepercayaan Bonferroni (untuk selisih rata-rata)
+#    Menggunakan pooled var untuk interval per variabel
+# ====================================================
+alpha <- 0.05
+p <- 2
+n1 <- nrow(group_remote)
+n2 <- nrow(group_office)
+
+xbar1 <- colMeans(group_remote)
+xbar2 <- colMeans(group_office)
+diff_mean <- xbar1 - xbar2
+
+S1 <- cov(group_remote)
+S2 <- cov(group_office)
+S_pooled <- ((n1 - 1) * S1 + (n2 - 1) * S2) / (n1 + n2 - 2)
+
+# standard error tiap variabel untuk selisih
+se_diff <- sqrt(diag(S_pooled) * (1 / n1 + 1 / n2))
+
+# Bonferroni-adjusted t kritis (df = n1 + n2 - 2)
+t_crit <- qt(1 - alpha / (2 * p), df = n1 + n2 - 2)
+
+CI_list <- lapply(1:p, function(k) {
+  lower <- diff_mean[k] - t_crit * se_diff[k]
+  upper <- diff_mean[k] + t_crit * se_diff[k]
+  c(variable = colnames(group_remote)[k], lower = lower, upper = upper)
+})
+do.call(rbind, CI_list)
+
+# Tampilkan juga diff_mean untuk rujukan
+diff_mean
+
+```
+
+Hasil Analisis
+Uji Hotelling T² (saling bebas, ragam sama):
+Terdapat perbedaan signifikan rata-rata vektor produktifitas dan kesejahteraan antara remote dan office (p < 0.05).
+Uji Berpasangan:
+Menunjukkan perubahan signifikan antara kondisi kerja remote dan office (p < 0.05).
+Uji Hotelling T² (saling bebas, ragam tidak sama):
+Hasil tetap signifikan (p < 0.05), perbedaan rata-rata konsisten meskipun varians berbeda.
+Selang Kepercayaan Bonferroni (95%):
+Produktifitas: selisih positif → remote lebih tinggi.
+Kesejahteraan: selisih kecil, cenderung lebih baik di office.
